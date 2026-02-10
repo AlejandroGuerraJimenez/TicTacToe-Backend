@@ -1,11 +1,41 @@
 import Fastify from 'fastify';
+import cors from '@fastify/cors';
+import bcrypt from 'bcrypt';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { Pool } from 'pg';
+import { users } from './db/schema'; //
+import 'dotenv/config'; //
+
 
 export function buildApp() {
-  const app = Fastify({ logger: true });                    // Configuramos Fastify para usar su sistema de logging integrado
+  const app = Fastify({ logger: true });                    
 
-  app.get('/', async () => {                                // Endpoint raíz para verificar que el servidor está funcionando
-    return { message: 'Welcome to the Tic Tac Toe API!' };  // Respondemos con un mensaje de bienvenida en formato JSON
-  });
+  //Configuración de la base de datos
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  const db = drizzle(pool);                                              
   
-  return app;                                               // Devolvemos la instancia de la aplicación Fastify para que pueda ser utilizada en el servidor
+  // Habilitar CORS
+  app.register(cors, {origin: '*'}); 
+
+  // Ruta POST para el registro
+  app.post('/register', async (request, reply) => {
+
+    const { username, email, password } = request.body as { username: string; email: string; password: string }; //
+    
+    console.log(request);
+    
+    try {
+      // Hasheamos la contraseña
+      const hashedPassword = await bcrypt.hash(password, 10);
+
+      // Insertamos el nuevo usuario
+      const newUser = await db.insert(users).values({ username, email, password: hashedPassword }).returning();
+      return reply.status(201).send({ success: true, user: newUser });
+
+    } catch (error) {
+      reply.status(500).send({ success: false, error: 'Registration failed' }); //
+    }
+  });
+
+  return app; // Retornamos la instancia para poder usarla en server.ts
 }
