@@ -3,8 +3,8 @@ import { authenticate } from '../plugins/auth';
 import { notifyUser } from '../plugins/realtime';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
-import { users, games, gameInvitations, chats, messages } from '../db/schema';
-import { eq, and, desc } from 'drizzle-orm';
+import { users, games, gameInvitations, chats, messages, friendships } from '../db/schema';
+import { eq, and, desc, or } from 'drizzle-orm';
 
 async function deleteGameChat(
   chatId: number | null,
@@ -48,6 +48,7 @@ export async function gamesRoutes(server: FastifyInstance) {
           id: games.id,
           status: games.status,
           playerTurn: games.playerTurn,
+          winnerId: games.winnerId,
           createdAt: games.createdAt,
           opponentId: games.playerOId,
           opponentUsername: users.username,
@@ -61,6 +62,7 @@ export async function gamesRoutes(server: FastifyInstance) {
           id: games.id,
           status: games.status,
           playerTurn: games.playerTurn,
+          winnerId: games.winnerId,
           createdAt: games.createdAt,
           opponentId: games.playerXId,
           opponentUsername: users.username,
@@ -70,8 +72,8 @@ export async function gamesRoutes(server: FastifyInstance) {
         .where(eq(games.playerOId, userId));
 
       const list = [
-        ...gamesAsX.map((g) => ({ ...g, mySymbol: 'X' as const })),
-        ...gamesAsO.map((g) => ({ ...g, mySymbol: 'O' as const })),
+        ...gamesAsX.map((g) => ({ ...g, mySymbol: 'X' as const, youWon: g.status === 'FINISHED' && g.winnerId === userId })),
+        ...gamesAsO.map((g) => ({ ...g, mySymbol: 'O' as const, youWon: g.status === 'FINISHED' && g.winnerId === userId })),
       ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
       return reply.status(200).send({ success: true, games: list });
@@ -126,6 +128,23 @@ export async function gamesRoutes(server: FastifyInstance) {
       }
       if (targetUser.id === senderId) {
         return reply.status(400).send({ success: false, error: 'No puedes invitarte a ti mismo' });
+      }
+
+      const friendRows = await db
+        .select()
+        .from(friendships)
+        .where(
+          or(
+            and(eq(friendships.userId, senderId), eq(friendships.friendId, targetUser.id)),
+            and(eq(friendships.userId, targetUser.id), eq(friendships.friendId, senderId))
+          )
+        );
+      if (friendRows.length === 0) {
+        return reply.status(403).send({
+          success: false,
+          error: 'Solo puedes invitar a jugar a tus amigos',
+          code: 'NOT_FRIEND',
+        });
       }
 
       const existing = await db

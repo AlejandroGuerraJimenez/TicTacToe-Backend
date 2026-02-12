@@ -135,10 +135,8 @@ export async function friendsRoutes(server: FastifyInstance) {
                 return reply.status(404).send({ success: false, error: 'Solicitud no encontrada o inválida' });
             }
 
-            // Actualizar estado a ACCEPTED
-            await db.update(friendRequests)
-                .set({ status: 'ACCEPTED' })
-                .where(eq(friendRequests.id, reqIdNum));
+            // Eliminar la solicitud de la base de datos
+            await db.delete(friendRequests).where(eq(friendRequests.id, reqIdNum));
 
             // Verificar si ya existe la amistad
             const existingFriendship = await db.select().from(friendships).where(
@@ -189,12 +187,10 @@ export async function friendsRoutes(server: FastifyInstance) {
                 return reply.status(404).send({ success: false, error: 'Solicitud no encontrada' });
             }
 
-            // Actualizar estado a REJECTED
-            await db.update(friendRequests)
-                .set({ status: 'REJECTED' })
-                .where(eq(friendRequests.id, reqIdNum));
+            const senderId = requests[0].senderId;
+            await db.delete(friendRequests).where(eq(friendRequests.id, reqIdNum));
 
-            notifyUser(requests[0].senderId, 'friend_rejected', {
+            notifyUser(senderId, 'friend_rejected', {
                 userId,
                 username: request.user.username
             });
