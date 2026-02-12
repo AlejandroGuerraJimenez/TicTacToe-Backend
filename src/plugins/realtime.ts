@@ -15,7 +15,8 @@ export type RealtimePayload =
   | { event: 'friend_request'; data: { senderId: number; senderName: string } }
   | { event: 'friend_accepted'; data: { userId: number; username: string } }
   | { event: 'friend_rejected'; data: { userId: number; username: string } }
-  | { event: 'friend_removed'; data: { userId: number } };
+  | { event: 'friend_removed'; data: { userId: number } }
+  | { event: 'game_move'; data: { gameId: number; opponentUsername: string } };
 
 /** Envía a todas las conexiones activas de un usuario (varias pestañas/conexiones). */
 export function notifyUser(userId: number, event: string, data: unknown): void {

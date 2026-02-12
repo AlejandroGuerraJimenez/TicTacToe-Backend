@@ -7,7 +7,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "db:generate": "drizzle-kit generate --config=drizzle.config.ts",
-    "db:push": "drizzle-kit push --config=drizzle.config.ts"
+"db:push": "drizzle-kit push --config=drizzle.config.ts",
+    "db:migrate-fix": "node scripts/run-migrate-0002.cjs"
   },
   "keywords": [],
   "author": "",

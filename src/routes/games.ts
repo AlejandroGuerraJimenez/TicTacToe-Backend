@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { authenticate } from '../plugins/auth';
+import { notifyUser } from '../plugins/realtime';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import { users, games, gameInvitations } from '../db/schema';
@@ -10,6 +11,20 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const db = drizzle(pool);
 
 const INITIAL_BOARD = '---------';
+
+const LINES = [
+  [0, 1, 2], [3, 4, 5], [6, 7, 8],
+  [0, 3, 6], [1, 4, 7], [2, 5, 8],
+  [0, 4, 8], [2, 4, 6],
+];
+
+function checkWinner(board: string, symbol: string): boolean {
+  return LINES.some(([a, b, c]) => board[a] === symbol && board[b] === symbol && board[c] === symbol);
+}
+
+function isDraw(board: string): boolean {
+  return !board.includes('-');
+}
 
 export async function gamesRoutes(server: FastifyInstance) {
   server.addHook('onRequest', authenticate);
@@ -166,6 +181,8 @@ export async function gamesRoutes(server: FastifyInstance) {
         boardState: INITIAL_BOARD,
         playerTurn: 'X',
         status: 'ACTIVE',
+        chatId: null,
+        winnerId: null,
       });
 
       return reply.status(200).send({ success: true, message: 'Partida creada' });
@@ -204,6 +221,136 @@ export async function gamesRoutes(server: FastifyInstance) {
     } catch (error) {
       server.log.error(error);
       return reply.status(500).send({ success: false, error: 'Error al rechazar' });
+    }
+  });
+
+  // GET /games/:id — una partida (para jugar)
+  server.get('/:id', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const userId = request.user.id;
+    if (!Number.isInteger(id) || id < 1) {
+      return reply.status(400).send({ success: false, error: 'Id inválido' });
+    }
+    try {
+      const rows = await db.select().from(games).where(eq(games.id, id));
+      const game = rows[0];
+      if (!game) {
+        return reply.status(404).send({ success: false, error: 'Partida no encontrada' });
+      }
+      if (game.playerXId !== userId && game.playerOId !== userId) {
+        return reply.status(403).send({ success: false, error: 'No participas en esta partida' });
+      }
+      const [xUser, oUser] = await Promise.all([
+        db.select({ username: users.username }).from(users).where(eq(users.id, game.playerXId)),
+        db.select({ username: users.username }).from(users).where(eq(users.id, game.playerOId)),
+      ]);
+      const mySymbol = game.playerXId === userId ? 'X' : 'O';
+      const opponentUsername = game.playerXId === userId ? oUser[0]?.username : xUser[0]?.username;
+      const youWon = game.winnerId !== null && game.winnerId === userId;
+      return reply.status(200).send({
+        success: true,
+        game: {
+          id: game.id,
+          boardState: game.boardState,
+          playerTurn: game.playerTurn,
+          status: game.status,
+          winnerId: game.winnerId,
+          mySymbol,
+          opponentUsername: opponentUsername ?? '',
+          youWon,
+        },
+      });
+    } catch (error) {
+      server.log.error(error);
+      return reply.status(500).send({ success: false, error: 'Error al cargar partida' });
+    }
+  });
+
+  // POST /games/:id/move — hacer jugada { position: number } (0-8)
+  server.post('/:id/move', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const { position } = request.body as { position: number };
+    const userId = request.user.id;
+
+    if (!Number.isInteger(id) || id < 1) {
+      return reply.status(400).send({ success: false, error: 'Id inválido' });
+    }
+    if (typeof position !== 'number' || position < 0 || position > 8) {
+      return reply.status(400).send({ success: false, error: 'position debe ser 0-8' });
+    }
+
+    try {
+      const rows = await db.select().from(games).where(eq(games.id, id));
+      const game = rows[0];
+      if (!game) {
+        return reply.status(404).send({ success: false, error: 'Partida no encontrada' });
+      }
+      if (game.status !== 'ACTIVE') {
+        return reply.status(400).send({ success: false, error: 'Partida terminada' });
+      }
+
+      const isX = game.playerXId === userId;
+      const isO = game.playerOId === userId;
+      if (!isX && !isO) {
+        return reply.status(403).send({ success: false, error: 'No participas en esta partida' });
+      }
+      const mySymbol = isX ? 'X' : 'O';
+      if (game.playerTurn !== mySymbol) {
+        return reply.status(400).send({ success: false, error: 'No es tu turno' });
+      }
+
+      const board = game.boardState.split('');
+      if (board[position] !== '-') {
+        return reply.status(400).send({ success: false, error: 'Casilla ocupada' });
+      }
+      board[position] = mySymbol;
+      const newBoard = board.join('');
+
+      let newStatus = game.status;
+      let newTurn = game.playerTurn === 'X' ? 'O' : 'X';
+      let winnerId: number | null = null;
+
+      if (checkWinner(newBoard, mySymbol)) {
+        newStatus = 'FINISHED';
+        winnerId = userId;
+        newTurn = game.playerTurn;
+      } else if (isDraw(newBoard)) {
+        newStatus = 'DRAW';
+      }
+
+      await db
+        .update(games)
+        .set({
+          boardState: newBoard,
+          playerTurn: newTurn,
+          status: newStatus,
+          ...(winnerId !== null && { winnerId }),
+        })
+        .where(eq(games.id, id));
+
+      const opponentId = isX ? game.playerOId : game.playerXId;
+      const opponentRows = await db.select({ username: users.username }).from(users).where(eq(users.id, opponentId));
+      const opponentUsername = opponentRows[0]?.username ?? '';
+
+      notifyUser(opponentId, 'game_move', { gameId: id, opponentUsername: request.user.username });
+
+      const youWon = winnerId === userId;
+      return reply.status(200).send({
+        success: true,
+        game: {
+          id,
+          boardState: newBoard,
+          playerTurn: newTurn,
+          status: newStatus,
+          winnerId,
+          mySymbol,
+          opponentUsername,
+          youWon,
+        },
+      });
+    } catch (error) {
+      server.log.error(error);
+      return reply.status(500).send({ success: false, error: 'Error al jugar' });
     }
   });
 }
