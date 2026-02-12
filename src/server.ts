@@ -10,6 +10,7 @@ import { users } from './db/schema';
 import { authenticate } from './plugins/auth';
 import { realtimePlugin } from './plugins/realtime';
 import { friendsRoutes } from './routes/friends';
+import { gamesRoutes } from './routes/games';
 import 'dotenv/config';
 
 // Define custom types for JWT
@@ -48,6 +49,7 @@ server.register(cookie, {
 server.register(realtimePlugin);
 
 server.register(friendsRoutes, { prefix: '/friends' });
+server.register(gamesRoutes, { prefix: '/games' });
 
 server.post('/register', async (request, reply) => {
   const { username, email, password } = request.body as any;

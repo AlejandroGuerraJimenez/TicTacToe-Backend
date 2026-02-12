@@ -1,4 +1,4 @@
-import { pgTable, serial, varchar, text, timestamp } from "drizzle-orm/pg-core"; 
+import { pgTable, serial, integer, varchar, text, timestamp } from "drizzle-orm/pg-core"; 
 
 export const users = pgTable("user", {
     id: serial("id").primaryKey(),
@@ -12,11 +12,11 @@ export const games = pgTable("game", {
     id: serial("id").primaryKey(),
     playerXId: serial("player_x_id").notNull().references(() => users.id),
     playerOId: serial("player_o_id").notNull().references(() => users.id),
-    chatId: serial("chat_id").references(() => chats.id),
+    chatId: integer("chat_id").references(() => chats.id),
     boardState: text("board_state").notNull(),
     playerTurn: varchar("current_player", { length: 1 }).notNull(),
     status: varchar("status", { length: 20 }).notNull(),
-    winnerId: serial("winner_id").references(() => users.id),
+    winnerId: integer("winner_id").references(() => users.id),
     createdAt: timestamp("created_at").defaultNow().notNull(),
 }); 
 
