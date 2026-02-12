@@ -39,6 +39,7 @@ export const friendships = pgTable("friendship", {
 export const messages = pgTable("message", {
     id: serial("id").primaryKey(),
     chatId: serial("chat_id").notNull().references(() => chats.id),
+    senderId: serial("sender_id").notNull().references(() => users.id),
     content: text("content").notNull(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
 });

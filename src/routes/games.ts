@@ -3,8 +3,18 @@ import { authenticate } from '../plugins/auth';
 import { notifyUser } from '../plugins/realtime';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
-import { users, games, gameInvitations } from '../db/schema';
+import { users, games, gameInvitations, chats, messages } from '../db/schema';
 import { eq, and, desc } from 'drizzle-orm';
+
+async function deleteGameChat(
+  chatId: number | null,
+  gameId: number
+): Promise<void> {
+  if (chatId == null) return;
+  await db.update(games).set({ chatId: null }).where(eq(games.id, gameId));
+  await db.delete(messages).where(eq(messages.chatId, chatId));
+  await db.delete(chats).where(eq(chats.id, chatId));
+}
 import 'dotenv/config';
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -175,13 +185,18 @@ export async function gamesRoutes(server: FastifyInstance) {
         return reply.status(404).send({ success: false, error: 'Invitación no encontrada o ya usada' });
       }
 
+      const [newChat] = await db.insert(chats).values({
+        user1Id: inv.senderId,
+        user2Id: inv.receiverId,
+      }).returning({ id: chats.id });
+
       const [newGame] = await db.insert(games).values({
         playerXId: inv.senderId,
         playerOId: inv.receiverId,
         boardState: INITIAL_BOARD,
         playerTurn: 'X',
         status: 'ACTIVE',
-        chatId: null,
+        chatId: newChat.id,
         winnerId: null,
       }).returning({ id: games.id });
 
@@ -227,6 +242,126 @@ export async function gamesRoutes(server: FastifyInstance) {
     } catch (error) {
       server.log.error(error);
       return reply.status(500).send({ success: false, error: 'Error al rechazar' });
+    }
+  });
+
+  // GET /games/:id/chat — obtener o crear chat de la partida y mensajes (solo partidas en curso)
+  server.get('/:id/chat', async (request, reply) => {
+    const gameId = Number((request.params as { id: string }).id);
+    const userId = request.user.id;
+    if (!Number.isInteger(gameId) || gameId < 1) {
+      return reply.status(400).send({ success: false, error: 'Id inválido' });
+    }
+    try {
+      const rows = await db.select().from(games).where(eq(games.id, gameId));
+      const game = rows[0];
+      if (!game) return reply.status(404).send({ success: false, error: 'Partida no encontrada' });
+      if (game.playerXId !== userId && game.playerOId !== userId) {
+        return reply.status(403).send({ success: false, error: 'No participas en esta partida' });
+      }
+      if (game.status === 'FINISHED' || game.status === 'DRAW') {
+        await deleteGameChat(game.chatId, gameId);
+        return reply.status(403).send({ success: false, error: 'El chat no está disponible para partidas terminadas' });
+      }
+      let chatId = game.chatId;
+      if (chatId == null) {
+        const [newChat] = await db.insert(chats).values({
+          user1Id: game.playerXId,
+          user2Id: game.playerOId,
+        }).returning({ id: chats.id });
+        chatId = newChat.id;
+        await db.update(games).set({ chatId }).where(eq(games.id, gameId));
+      }
+      const opponentId = game.playerXId === userId ? game.playerOId : game.playerXId;
+      const opponentRows = await db.select({ username: users.username }).from(users).where(eq(users.id, opponentId));
+      const opponentUsername = opponentRows[0]?.username ?? '';
+      const messageRows = await db
+        .select({
+          id: messages.id,
+          content: messages.content,
+          createdAt: messages.createdAt,
+          senderId: messages.senderId,
+          senderUsername: users.username,
+        })
+        .from(messages)
+        .leftJoin(users, eq(messages.senderId, users.id))
+        .where(eq(messages.chatId, chatId))
+        .orderBy(messages.createdAt);
+      const list = messageRows.map((m) => ({
+        id: m.id,
+        content: m.content,
+        createdAt: m.createdAt,
+        senderUsername: m.senderUsername ?? '?',
+        isMine: m.senderId === userId,
+      }));
+      return reply.status(200).send({
+        success: true,
+        chatId,
+        opponentUsername,
+        messages: list,
+      });
+    } catch (error) {
+      server.log.error(error);
+      return reply.status(500).send({ success: false, error: 'Error al cargar chat' });
+    }
+  });
+
+  // POST /games/:id/chat/messages — enviar mensaje (solo partidas en curso)
+  server.post('/:id/chat/messages', async (request, reply) => {
+    const gameId = Number((request.params as { id: string }).id);
+    const { content } = request.body as { content: string };
+    const userId = request.user.id;
+    if (!Number.isInteger(gameId) || gameId < 1) {
+      return reply.status(400).send({ success: false, error: 'Id inválido' });
+    }
+    if (!content || typeof content !== 'string' || !content.trim()) {
+      return reply.status(400).send({ success: false, error: 'Mensaje vacío' });
+    }
+    try {
+      const rows = await db.select().from(games).where(eq(games.id, gameId));
+      const game = rows[0];
+      if (!game) return reply.status(404).send({ success: false, error: 'Partida no encontrada' });
+      if (game.playerXId !== userId && game.playerOId !== userId) {
+        return reply.status(403).send({ success: false, error: 'No participas en esta partida' });
+      }
+      if (game.status === 'FINISHED' || game.status === 'DRAW') {
+        return reply.status(403).send({ success: false, error: 'El chat no está disponible para partidas terminadas' });
+      }
+      let chatId = game.chatId;
+      if (chatId == null) {
+        const [newChat] = await db.insert(chats).values({
+          user1Id: game.playerXId,
+          user2Id: game.playerOId,
+        }).returning({ id: chats.id });
+        chatId = newChat.id;
+        await db.update(games).set({ chatId }).where(eq(games.id, gameId));
+      }
+      const [msg] = await db.insert(messages).values({
+        chatId,
+        senderId: userId,
+        content: content.trim().slice(0, 2000),
+      }).returning({ id: messages.id, content: messages.content, createdAt: messages.createdAt });
+      const me = await db.select({ username: users.username }).from(users).where(eq(users.id, userId));
+      const senderUsername = me[0]?.username ?? '';
+      const recipientId = game.playerXId === userId ? game.playerOId : game.playerXId;
+      const messagePayload = {
+        id: msg.id,
+        content: msg.content,
+        createdAt: msg.createdAt,
+        senderUsername,
+      };
+      notifyUser(recipientId, 'chat_message', {
+        gameId,
+        message: { ...messagePayload, isMine: false },
+      });
+      notifyUser(userId, 'chat_message', {
+        gameId,
+        message: { ...messagePayload, isMine: true },
+      });
+      return reply.status(201).send({ success: true });
+    } catch (error) {
+      server.log.error(error);
+      return reply.status(500).send({ success: false, error: 'Error al enviar mensaje' });
     }
   });
 
@@ -333,6 +468,10 @@ export async function gamesRoutes(server: FastifyInstance) {
           ...(winnerId !== null && { winnerId }),
         })
         .where(eq(games.id, id));
+
+      if (newStatus === 'FINISHED' || newStatus === 'DRAW') {
+        await deleteGameChat(game.chatId, id);
+      }
 
       const opponentId = isX ? game.playerOId : game.playerXId;
       const opponentRows = await db.select({ username: users.username }).from(users).where(eq(users.id, opponentId));
