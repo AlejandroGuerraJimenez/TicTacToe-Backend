@@ -292,6 +292,22 @@ export async function gamesRoutes(server: FastifyInstance) {
         await db.update(games).set({ chatId }).where(eq(games.id, gameId));
       }
       const opponentId = game.playerXId === userId ? game.playerOId : game.playerXId;
+      const isUser1 = userId === game.playerXId;
+      const chatRows = await db.select().from(chats).where(eq(chats.id, chatId));
+      const chatRow = chatRows[0];
+      const now = new Date();
+      if (chatRow) {
+        if (isUser1) {
+          await db.update(chats).set({ user1LastReadAt: now }).where(eq(chats.id, chatId));
+          notifyUser(opponentId, 'chat_read', { gameId, readAt: now.toISOString() });
+        } else {
+          await db.update(chats).set({ user2LastReadAt: now }).where(eq(chats.id, chatId));
+          notifyUser(opponentId, 'chat_read', { gameId, readAt: now.toISOString() });
+        }
+      }
+      const otherLastReadAt = chatRow
+        ? (isUser1 ? chatRow.user2LastReadAt : chatRow.user1LastReadAt)
+        : null;
       const opponentRows = await db.select({ username: users.username }).from(users).where(eq(users.id, opponentId));
       const opponentUsername = opponentRows[0]?.username ?? '';
       const messageRows = await db
@@ -318,6 +334,7 @@ export async function gamesRoutes(server: FastifyInstance) {
         chatId,
         opponentUsername,
         messages: list,
+        otherLastReadAt: otherLastReadAt ? (otherLastReadAt as Date).toISOString() : null,
       });
     } catch (error) {
       server.log.error(error);

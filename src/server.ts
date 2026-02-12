@@ -148,8 +148,60 @@ server.post('/login', async (request, reply) => {
 server.get('/me', {
   onRequest: [authenticate]
 }, async (request, reply) => {
-  // request.user ya está poblado por el middleware
   return reply.status(200).send({ success: true, user: request.user });
+});
+
+// 5b. Actualizar perfil (username, email)
+server.patch('/me', {
+  onRequest: [authenticate]
+}, async (request, reply) => {
+  const userId = request.user.id;
+  const body = request.body as any;
+  const username = typeof body?.username === 'string' ? body.username.trim() : '';
+  const email = typeof body?.email === 'string' ? body.email.trim() : '';
+
+  if (!username && !email) {
+    return reply.status(400).send({ success: false, error: 'Indica username o email para actualizar' });
+  }
+  if (username && username.length < 2) {
+    return reply.status(400).send({ success: false, error: 'El nombre de usuario debe tener al menos 2 caracteres' });
+  }
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (email && !emailRegex.test(email)) {
+    return reply.status(400).send({ success: false, error: 'Correo electrónico no válido' });
+  }
+
+  try {
+    const updates: { username?: string; email?: string } = {};
+    if (username) updates.username = username;
+    if (email) updates.email = email;
+
+    if (updates.username) {
+      const existing = await db.select({ id: users.id }).from(users).where(eq(users.username, updates.username));
+      if (existing.length > 0 && existing[0].id !== userId) {
+        return reply.status(409).send({ success: false, error: 'Ese nombre de usuario ya está en uso' });
+      }
+    }
+    if (updates.email) {
+      const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, updates.email));
+      if (existing.length > 0 && existing[0].id !== userId) {
+        return reply.status(409).send({ success: false, error: 'Ese correo ya está en uso' });
+      }
+    }
+
+    const [updated] = await db.update(users).set(updates).where(eq(users.id, userId)).returning({
+      id: users.id,
+      username: users.username,
+      email: users.email,
+      createdAt: users.createdAt,
+    });
+    if (!updated) return reply.status(404).send({ success: false, error: 'Usuario no encontrado' });
+
+    return reply.status(200).send({ success: true, user: updated });
+  } catch (error) {
+    server.log.error(error);
+    return reply.status(500).send({ success: false, error: 'Error al actualizar el perfil' });
+  }
 });
 
 // 6. Ruta de logout: borrar cookie de sesión

@@ -49,6 +49,8 @@ export const chats = pgTable("chat", {
     user1Id: serial("user1_id").notNull().references(() => users.id),
     user2Id: serial("user2_id").notNull().references(() => users.id),
     createdAt: timestamp("created_at").defaultNow().notNull(),
+    user1LastReadAt: timestamp("user1_last_read_at"),
+    user2LastReadAt: timestamp("user2_last_read_at"),
 });
 
 export const gameInvitations = pgTable("game_invitation", {
