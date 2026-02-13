@@ -142,11 +142,19 @@ server.post('/login', async (request, reply) => {
   }
 });
 
-// 5. Ruta para obtener el usuario actual a partir del JWT cookie
+// 5. Ruta para obtener el usuario actual: siempre desde la BD (así tras cambiar perfil, al recargar se ven los datos nuevos)
 server.get('/me', {
   onRequest: [authenticate]
 }, async (request, reply) => {
-  return reply.status(200).send({ success: true, user: request.user });
+  const userId = request.user.id;
+  const [user] = await db
+    .select({ id: users.id, username: users.username, email: users.email, createdAt: users.createdAt })
+    .from(users)
+    .where(eq(users.id, userId));
+  if (!user) {
+    return reply.status(404).send({ success: false, error: 'Usuario no encontrado' });
+  }
+  return reply.status(200).send({ success: true, user });
 });
 
 // 5b. Actualizar perfil (username, email)
