@@ -23,6 +23,16 @@ declare module '@fastify/jwt' {
 
 const server = Fastify({ logger: true });
 
+const isProduction = process.env.NODE_ENV === 'production';
+// En producción (front y back en distintos dominios) la cookie debe ser Secure y SameSite=None
+const cookieOptions = {
+  path: '/',
+  httpOnly: true,
+  sameSite: (isProduction ? 'none' : 'lax') as 'lax' | 'none',
+  secure: isProduction,
+  maxAge: 60 * 60 * 24 * 7,
+};
+
 // 1. Base de datos: una sola instancia compartida (véase db/connection.ts)
 
 // 2. Registro de plugins
@@ -77,18 +87,14 @@ server.post('/register', async (request, reply) => {
     const { password: _pw, ...safeUser } = newUser[0];
     const token = server.jwt.sign({ id: safeUser.id, username: safeUser.username, email: safeUser.email });
 
-    reply.setCookie('token', token, {
-      path: '/',
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: false,
-      maxAge: 60 * 60 * 24 * 7,
-    });
+    reply.setCookie('token', token, cookieOptions);
 
     return reply.status(201).send({ success: true, user: safeUser, token });
   } catch (error: any) {
     server.log.error(error);
-    if (error?.code === '23505') {
+    // Drizzle a veces envuelve el error de PostgreSQL en error.cause
+    const pgCode = error?.code ?? error?.cause?.code;
+    if (pgCode === '23505') {
       return reply.status(409).send({ success: false, error: 'El nombre de usuario o el correo ya están en uso' });
     }
     return reply.status(500).send({ success: false, error: 'Error al crear la cuenta. Inténtalo de nuevo.' });
@@ -97,10 +103,13 @@ server.post('/register', async (request, reply) => {
 
 // 4. Ruta de login (recuperar datos de una BD y validar contraseña)
 server.post('/login', async (request, reply) => {
-  const { username, email, password } = request.body as LoginBody;
+  const body = request.body as LoginBody | undefined;
+  const username = typeof body?.username === 'string' ? body.username.trim() : '';
+  const email = typeof body?.email === 'string' ? body.email.trim() : '';
+  const password = typeof body?.password === 'string' ? body.password : '';
 
   if (!password || !email) {
-    return reply.status(400).send({ success: false, error: 'Faltan credenciales' });
+    return reply.status(400).send({ success: false, error: 'Faltan credenciales (email y contraseña)' });
   }
 
   try {
@@ -124,22 +133,19 @@ server.post('/login', async (request, reply) => {
     // Generamos JWT
     const token = server.jwt.sign({ id: user.id, username: user.username, email: user.email });
 
-    // Crear cookie de sesión (ahora es el JWT)
-    reply.setCookie('token', token, {
-      path: '/',
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: false,
-      maxAge: 60 * 60 * 24 * 7, // 7 días
-    });
+    reply.setCookie('token', token, cookieOptions);
 
     // Devolver datos seguros (sin password)
     const { password: _pw, ...safeUser } = user;
 
     return reply.status(200).send({ success: true, user: safeUser, token }); // Devolvemos token explícitamente como pidió el usuario
-  } catch (error) {
+  } catch (error: any) {
     server.log.error(error);
-    return reply.status(500).send({ success: false, error: 'Login failed' });
+    const pgCode = error?.code ?? error?.cause?.code;
+    if (pgCode === '23505') {
+      return reply.status(409).send({ success: false, error: 'Conflicto de datos' });
+    }
+    return reply.status(500).send({ success: false, error: 'Error en el login. Comprueba que el backend tenga DATABASE_URL en Railway.' });
   }
 });
 
